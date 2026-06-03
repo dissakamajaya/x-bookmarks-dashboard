@@ -33,7 +33,8 @@ const els = {
 
 function fmtDate(v) {
   if (!v) return '';
-  return new Date(v).toLocaleDateString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  try { return new Date(v).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
+  catch { return new Date(v).toLocaleDateString() + ' ' + new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
 }
 
 function fmtRel(v) {
