@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""x-bookmarks CLI -- fetch latest bookmarked posts from X/Twitter API.
+Usage: python3 x-bookmarks [--limit N] [--token TOKEN] [--json]
+"""
+from __future__ import annotations
+import json, os, sys, urllib.error, urllib.parse, urllib.request
+from datetime import datetime, timezone
+
+TOKEN = os.environ.get("X_ACCESS_TOKEN", "").strip()
+BASE = os.environ.get("X_API_BASE_URL", "https://api.x.com").rstrip("/")
+LIMIT = 10
+AS_JSON = False
+
+def fmt_date(v):
+    if not v:
+        return "???"
+    try:
+        d = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return d.astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return v
+
+def shorten(t, m=180):
+    t = " ".join((t or "").split())
+    return t if len(t) <= m else t[: m-1] + "..."
+
+def fetch(path, params=None):
+    bases = [BASE, "https://api.twitter.com"]
+    last = None
+    for b in bases:
+        u = f"{b}{path}"
+        if params:
+            u = f"{u}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(
+            u,
+            headers={"Authorization": f"Bearer {TOKEN}", "User-Agent": "x-bookmarks/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            try:
+                p = json.loads(body)
+            except Exception:
+                p = {"raw": body}
+            msg = p.get("detail") or p.get("title") or body or str(e)
+            last = RuntimeError(f"X API {e.code}: {msg}")
+            if e.code != 404 or b == bases[-1]:
+                raise last
+        except Exception as e:
+            last = e
+    raise last or RuntimeError("X API request failed")
+
+def get_token():
+    if TOKEN:
+        return TOKEN
+    return os.environ.get("X_ACCESS_TOKEN", "").strip()
+
+def main():
+    global LIMIT, AS_JSON
+    token = get_token()
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--limit" and i + 1 < len(args):
+            LIMIT = max(1, min(100, int(args[i + 1])))
+        elif a == "--json":
+            AS_JSON = True
+        elif a == "--token" and i + 1 < len(args):
+            token = args[i + 1]
+            os.environ["X_ACCESS_TOKEN"] = token
+        elif a in ("-h", "--help"):
+            print(__doc__)
+            sys.exit(0)
+    if not token:
+        print("Error: X_ACCESS_TOKEN required.", file=sys.stderr)
+        sys.exit(1)
+    me = fetch("/2/users/me").get("data")
+    if not me or not me.get("id"):
+        print("Error: cannot resolve user. Try X_USER_ID.", file=sys.stderr)
+        sys.exit(1)
+    uid, un = me["id"], me.get("username", "me")
+    payload = fetch(
+        f"/2/users/{uid}/bookmarks",
+        params={
+            "max_results": str(LIMIT),
+            "tweet.fields": "created_at,text,author_id,public_metrics,lang,article",
+            "expansions": "author_id",
+            "user.fields": "id,name,username",
+        },
+    )
+    users = {u["id"]: u for u in (payload.get("includes") or {}).get("users", [])}
+    items = (payload.get("data") or [])[:LIMIT]
+    if AS_JSON:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+        return
+    if not items:
+        print(f"No bookmarks for @{un}.")
+        return
+    print(f"Latest {len(items)} bookmarks for @{un}:\n")
+    for idx, item in enumerate(items, 1):
+        au = users.get(item.get("author_id", ""), {})
+        an = au.get("name") or au.get("username") or "Unknown"
+        ah = au.get("username", "unknown")
+        t = item.get("text") or ""
+        a = item.get("article") or {}
+        if a.get("title") and (t.startswith("http") or t == a["title"]):
+            t = a["title"]
+        print(f"{idx}. [{an} @{ah}] {fmt_date(item.get('created_at'))}")
+        print(f"   {shorten(t)}")
+        print(f"   https://x.com/i/web/status/{item['id']}\n")
+
+if __name__ == "__main__":
+    main()
