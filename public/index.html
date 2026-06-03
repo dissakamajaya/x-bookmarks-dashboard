@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>X Bookmarks Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">X Bookmarks</p>
+          <h1>Latest 50 bookmarked posts</h1>
+          <p class="lede">
+            A live dashboard that polls the X API, keeps the newest bookmarks on top, and shows new items as they land.
+          </p>
+        </div>
+
+        <div class="actions">
+          <button id="refreshBtn" class="button primary">Refresh now</button>
+          <button id="toggleBtn" class="button">Pause auto refresh</button>
+        </div>
+      </section>
+
+      <section class="stats" aria-label="Status overview">
+        <article class="stat-card">
+          <span class="label">Account</span>
+          <strong id="accountValue">Loading…</strong>
+        </article>
+        <article class="stat-card">
+          <span class="label">Loaded</span>
+          <strong id="countValue">0</strong>
+        </article>
+        <article class="stat-card">
+          <span class="label">Last refresh</span>
+          <strong id="refreshValue">Waiting…</strong>
+        </article>
+        <article class="stat-card">
+          <span class="label">Status</span>
+          <strong id="statusValue">Starting…</strong>
+        </article>
+      </section>
+
+      <section id="setupBanner" class="banner hidden"></section>
+
+      <section class="toolbar">
+        <label class="search">
+          <span>Filter</span>
+          <input id="filterInput" type="search" placeholder="Search by text, author, or handle" autocomplete="off" />
+        </label>
+        <div class="meta">
+          <span id="newValue">0 new since last refresh</span>
+          <span id="sourceValue">Source: —</span>
+        </div>
+      </section>
+
+      <section id="feed" class="feed" aria-live="polite"></section>
+    </main>
+
+    <template id="tweetTemplate">
+      <article class="tweet-card">
+        <header class="tweet-header">
+          <div class="author-block">
+            <img class="avatar" alt="" />
+            <div>
+              <div class="author-line">
+                <strong class="author-name"></strong>
+                <span class="author-handle"></span>
+              </div>
+              <time class="tweet-time"></time>
+            </div>
+          </div>
+          <a class="tweet-link" target="_blank" rel="noreferrer">Open on X</a>
+        </header>
+
+        <p class="tweet-text"></p>
+
+        <div class="tweet-tags"></div>
+        <div class="tweet-media"></div>
+
+        <footer class="tweet-footer">
+          <div class="metrics"></div>
+          <span class="tweet-id"></span>
+        </footer>
+      </article>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "x-bookmarks-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local dashboard for the latest bookmarked posts from X/Twitter.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  }
+}
