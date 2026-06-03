@@ -4,71 +4,152 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>X Bookmarks Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">X Bookmarks</p>
-          <h1>Latest 50 bookmarked posts</h1>
+      <header class="topbar">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true">✦</span>
+          <div>
+            <p class="brand-name">X Bookmarks Dashboard</p>
+            <p class="brand-note">Realtime reading surface for your latest saved posts.</p>
+          </div>
+        </div>
+
+        <div class="topbar-meta">
+          <div id="liveChip" class="live-chip live-chip-idle">Waiting for first sync</div>
+          <div class="pulse-note">
+            <span id="nextRefreshValue">Auto refresh every 30s</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="hero-grid">
+        <div class="hero-copy">
+          <h1>Your bookmark stream, organized in real time.</h1>
           <p class="lede">
-            A live dashboard that polls the X API, keeps the newest bookmarks on top, and shows new items as they land.
+            Keep the latest fifty X bookmarks in a calmer reading queue, track what just landed, and scan media,
+            authors, and engagement without leaving the dashboard.
           </p>
+
+          <div class="hero-actions">
+            <button id="refreshBtn" class="button primary">Refresh now</button>
+            <button id="toggleBtn" class="button">Pause auto refresh</button>
+          </div>
+
+          <section class="stats" aria-label="Status overview">
+            <article class="stat-card stat-card-strong">
+              <span class="label">Account</span>
+              <strong id="accountValue">Loading…</strong>
+              <span id="accountSubtext" class="detail">Resolving user identity</span>
+            </article>
+            <article class="stat-card">
+              <span class="label">Bookmarks loaded</span>
+              <strong id="countValue">0</strong>
+              <span id="countSubtext" class="detail">Visible in your queue</span>
+            </article>
+            <article class="stat-card">
+              <span class="label">Latest arrivals</span>
+              <strong id="newValue">0</strong>
+              <span id="newSubtext" class="detail">New since the last completed sync</span>
+            </article>
+            <article class="stat-card">
+              <span class="label">Refresh state</span>
+              <strong id="statusValue">Starting…</strong>
+              <span id="refreshValue" class="detail">Waiting for first sync</span>
+            </article>
+          </section>
         </div>
 
-        <div class="actions">
-          <button id="refreshBtn" class="button primary">Refresh now</button>
-          <button id="toggleBtn" class="button">Pause auto refresh</button>
-        </div>
+        <aside class="control-panel" aria-label="Controls and feed state">
+          <div class="panel-section">
+            <p class="panel-label">Session</p>
+            <div class="panel-row">
+              <span class="panel-key">Source</span>
+              <strong id="sourceValue">—</strong>
+            </div>
+            <div class="panel-row">
+              <span class="panel-key">Readiness</span>
+              <strong id="readyValue">Checking…</strong>
+            </div>
+            <div class="panel-row">
+              <span class="panel-key">Next pulse</span>
+              <strong id="nextPulseValue">Pending…</strong>
+            </div>
+          </div>
+
+          <div class="panel-section">
+            <label class="search">
+              <span>Search the queue</span>
+              <div class="search-input-wrap">
+                <input
+                  id="filterInput"
+                  type="search"
+                  placeholder="Search by text, author, handle, or metrics"
+                  autocomplete="off"
+                />
+                <button id="clearFilterBtn" class="icon-button hidden" type="button" aria-label="Clear search">
+                  Clear
+                </button>
+              </div>
+            </label>
+            <p class="search-hint">Press <kbd>/</kbd> to focus search.</p>
+          </div>
+
+          <div class="panel-section">
+            <p class="panel-label">Quick views</p>
+            <div id="quickFilters" class="quick-filters" role="tablist" aria-label="Bookmark quick filters">
+              <button class="filter-chip active" data-filter-mode="all" type="button" aria-pressed="true">All</button>
+              <button class="filter-chip" data-filter-mode="media" type="button" aria-pressed="false">Media</button>
+              <button class="filter-chip" data-filter-mode="notes" type="button" aria-pressed="false">Text-only</button>
+              <button class="filter-chip" data-filter-mode="popular" type="button" aria-pressed="false">Popular</button>
+            </div>
+          </div>
+        </aside>
       </section>
 
-      <section class="stats" aria-label="Status overview">
-        <article class="stat-card">
-          <span class="label">Account</span>
-          <strong id="accountValue">Loading…</strong>
-        </article>
-        <article class="stat-card">
-          <span class="label">Loaded</span>
-          <strong id="countValue">0</strong>
-        </article>
-        <article class="stat-card">
-          <span class="label">Last refresh</span>
-          <strong id="refreshValue">Waiting…</strong>
-        </article>
-        <article class="stat-card">
-          <span class="label">Status</span>
-          <strong id="statusValue">Starting…</strong>
-        </article>
+      <section id="setupBanner" class="banner hidden" aria-live="polite"></section>
+
+      <section class="feed-shell">
+        <header class="feed-header">
+          <div>
+            <p class="feed-kicker">Reading queue</p>
+            <h2 id="resultsHeading">Latest bookmarks</h2>
+          </div>
+          <div class="feed-summary">
+            <span id="resultsMeta">Waiting for data…</span>
+            <span id="lastUpdatedValue">No completed sync yet</span>
+          </div>
+        </header>
+
+        <section id="feed" class="feed" aria-live="polite"></section>
       </section>
-
-      <section id="setupBanner" class="banner hidden"></section>
-
-      <section class="toolbar">
-        <label class="search">
-          <span>Filter</span>
-          <input id="filterInput" type="search" placeholder="Search by text, author, or handle" autocomplete="off" />
-        </label>
-        <div class="meta">
-          <span id="newValue">0 new since last refresh</span>
-          <span id="sourceValue">Source: —</span>
-        </div>
-      </section>
-
-      <section id="feed" class="feed" aria-live="polite"></section>
     </main>
 
     <template id="tweetTemplate">
       <article class="tweet-card">
+        <div class="new-marker hidden">New</div>
+
         <header class="tweet-header">
           <div class="author-block">
             <img class="avatar" alt="" />
-            <div>
+            <div class="author-copy">
               <div class="author-line">
                 <strong class="author-name"></strong>
                 <span class="author-handle"></span>
               </div>
-              <time class="tweet-time"></time>
+              <div class="tweet-meta-line">
+                <time class="tweet-time"></time>
+                <span class="tweet-separator">•</span>
+                <span class="tweet-age"></span>
+              </div>
             </div>
           </div>
           <a class="tweet-link" target="_blank" rel="noreferrer">Open on X</a>
