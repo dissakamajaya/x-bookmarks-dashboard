@@ -299,18 +299,6 @@ export default async function handler(req, res) {
 
     if (url.pathname === '/api/health') {
       result = await handleHealth(clientToken);
-    } else if (url.pathname === '/api/refresh-test') {
-      // Debug endpoint: test the refresh flow and return info
-      const newTok = await refreshAccessToken();
-      result = {
-        ok: Boolean(newTok),
-        has_refresh: HAS_REFRESH,
-        has_id: Boolean(REFRESH_CLIENT_ID),
-        has_secret: Boolean(REFRESH_CLIENT_SECRET),
-        has_refresh_token: Boolean(REFRESH_TOKEN_ENV),
-        got_new_token: Boolean(newTok),
-        token_preview: newTok ? newTok.slice(0, 10) + '...' : null,
-      };
     } else if (url.pathname === '/api/bookmarks') {
       const limit = url.searchParams.get('limit');
       result = await withAutoRefresh(async (tk, refreshed) => {
