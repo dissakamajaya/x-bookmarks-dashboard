@@ -47,6 +47,56 @@ function setClientRefreshToken(t) {
   else localStorage.removeItem('x_refresh_token');
 }
 
+// ── Translation ──────────────────────────────────────────────────
+const translateCache = new Map();
+
+async function translateText(text, from) {
+  if (!text || !from || from === 'en' || from === 'und') return null;
+  const key = `${from}:${text.slice(0, 100)}`;
+  if (translateCache.has(key)) return translateCache.get(key);
+  try {
+    const r = await fetch(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(from)}&tl=en&dt=t&q=${encodeURIComponent(text.slice(0, 2000))}`
+    );
+    if (!r.ok) return null;
+    const data = await r.json();
+    const t = (data[0] || []).map(p => p[0]).filter(Boolean).join(' ');
+    if (t && t !== text) { translateCache.set(key, t); return t; }
+    return null;
+  } catch { return null; }
+}
+
+async function renderTranslateBtn(el, tweet) {
+  if (!tweet.lang || tweet.lang === 'en' || tweet.lang === 'und') return;
+  const btn = document.createElement('button');
+  btn.className = 'translate-btn';
+  btn.textContent = `Translate (${tweet.lang.toUpperCase()})`;
+  btn.dataset.lang = tweet.lang;
+  btn.dataset.text = tweet.text;
+  let translated = false;
+  btn.onclick = async () => {
+    if (translated) {
+      // Toggle back to original
+      el.textContent = tweet.text;
+      btn.textContent = `Translate (${tweet.lang.toUpperCase()})`;
+      translated = false;
+      return;
+    }
+    btn.textContent = 'Translating…';
+    btn.disabled = true;
+    const result = await translateText(tweet.text, tweet.lang);
+    btn.disabled = false;
+    if (result) {
+      el.textContent = result;
+      btn.textContent = '← Original';
+      translated = true;
+    } else {
+      btn.textContent = `Translate (${tweet.lang.toUpperCase()})`;
+    }
+  };
+  el.parentNode.insertBefore(btn, el.nextSibling);
+}
+
 function fmtDate(v) {
   if (!v) return '';
   try { return new Date(v).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
@@ -122,6 +172,7 @@ function renderTweet(tweet) {
   n.querySelector('.age').textContent = fmtRel(tweet.created_at);
   n.querySelector('.x-link').href = tweet.url;
   n.querySelector('.text').textContent = tweet.text || '';
+  renderTranslateBtn(n.querySelector('.text'), tweet);
 
   const isNew = state.previousIds.size > 0 && !state.previousIds.has(tweet.id);
   n.querySelector('.new-marker').classList.toggle('hidden', !isNew);

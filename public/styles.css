@@ -49,6 +49,9 @@ h1{font-size:20px;font-weight:700;letter-spacing:-.02em}
 .x-link{font-size:16px;color:var(--muted);text-decoration:none;margin-left:auto;flex-shrink:0;padding:4px}
 .x-link:hover{color:var(--accent)}
 .text{font-size:14px;line-height:1.55;white-space:pre-wrap;margin-bottom:8px;word-break:break-word}
+.translate-btn{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--accent);font-weight:600;cursor:pointer;margin-bottom:8px;transition:background .15s}
+.translate-btn:hover{background:var(--surface-hover);border-color:var(--line-strong)}
+.translate-btn:disabled{opacity:.5;cursor:wait}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .tag{font-size:11px;padding:3px 8px;border-radius:6px;font-weight:600;border:1px solid var(--line);color:var(--muted)}
 .media{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px}
