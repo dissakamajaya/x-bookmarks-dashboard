@@ -4,7 +4,15 @@ import { fileURLToPath } from 'node:url';
 
 // ── Token resolution ─────────────────────────────────────────────
 function resolveToken(headerToken) {
-  return headerToken || process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '';
+  return String(headerToken || process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '').trim();
+}
+
+function resolveRefreshToken(headerToken) {
+  return String(headerToken || refreshedRefreshToken || process.env.X_REFRESH_TOKEN || '').trim();
+}
+
+function hasRefresh(headerToken) {
+  return Boolean(REFRESH_CLIENT_ID && REFRESH_CLIENT_SECRET && resolveRefreshToken(headerToken));
 }
 
 // ── Env ──────────────────────────────────────────────────────────
@@ -35,9 +43,9 @@ const API_BASES = unique([normalizeBase(process.env.X_API_BASE_URL || 'https://a
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public/', import.meta.url)));
 
 // ── Refresh credentials (used to auto-refresh expired tokens) ────
-const REFRESH_CLIENT_ID = process.env.X_CLIENT_ID || '';
-const REFRESH_CLIENT_SECRET = process.env.X_CLIENT_SECRET || '';
-const REFRESH_TOKEN_ENV = process.env.X_REFRESH_TOKEN || '';
+const REFRESH_CLIENT_ID = String(process.env.X_CLIENT_ID || '').trim();
+const REFRESH_CLIENT_SECRET = String(process.env.X_CLIENT_SECRET || '').trim();
+const REFRESH_TOKEN_ENV = String(process.env.X_REFRESH_TOKEN || '').trim();
 const HAS_REFRESH = Boolean(REFRESH_CLIENT_ID && REFRESH_CLIENT_SECRET && REFRESH_TOKEN_ENV);
 
 // In-memory cache for tokens (survives warm serverless instances)
@@ -74,11 +82,12 @@ function apiUrl(base, path, query = {}) {
 function buildTweetUrl(id) { return `https://x.com/i/web/status/${id}`; }
 
 // ── Refresh expired tokens ───────────────────────────────────────
-async function refreshAccessToken() {
-  if (!HAS_REFRESH) return null;
+async function refreshAccessToken(refreshOverride) {
+  const refreshToken = resolveRefreshToken(refreshOverride);
+  if (!(REFRESH_CLIENT_ID && REFRESH_CLIENT_SECRET && refreshToken)) return null;
   const data = new URLSearchParams({
     grant_type: 'refresh_token',
-    refresh_token: refreshedRefreshToken || REFRESH_TOKEN_ENV,
+    refresh_token: refreshToken,
   });
   const creds = Buffer.from(`${REFRESH_CLIENT_ID}:${REFRESH_CLIENT_SECRET}`).toString('base64');
   try {
@@ -96,13 +105,12 @@ async function refreshAccessToken() {
       return null;
     }
     const json = await resp.json();
-    const newToken = json.access_token || '';
-    const newRefresh = json.refresh_token || '';
+    const newToken = String(json.access_token || '').trim();
+    const newRefresh = String(json.refresh_token || '').trim();
     if (!newToken) return null;
-    // Cache in memory
     refreshedToken = { token: newToken, expires_at: Date.now() + (json.expires_in || 7200) * 1000 };
     if (newRefresh) refreshedRefreshToken = newRefresh;
-    return newToken;
+    return { access_token: newToken, refresh_token: newRefresh, expires_in: json.expires_in || 7200 };
   } catch (e) {
     console.error(`Token refresh error: ${e.message}`);
     return null;
@@ -201,14 +209,15 @@ function normalizeTweet(tweet, includes = {}) {
 
 // ── Route handlers ───────────────────────────────────────────────
 
-async function handleHealth(token) {
+async function handleHealth(token, refreshToken) {
   const tk = getEffectiveToken(token);
   return {
     ok: true, ready: Boolean(tk),
     has_user_id: Boolean(USER_ID_ENV), has_username: Boolean(USERNAME_ENV),
-    has_refresh: HAS_REFRESH,
+    has_refresh: hasRefresh(refreshToken),
     api_base: API_BASES[0], default_limit: DEFAULT_LIMIT, cache_ttl_ms: CACHE_TTL_MS,
     token_source: token ? 'client' : refreshedToken ? 'refresh' : 'env',
+    refresh_source: refreshToken ? 'client' : refreshedRefreshToken ? 'memory' : REFRESH_TOKEN_ENV ? 'env' : 'none',
   };
 }
 
@@ -269,47 +278,47 @@ async function serveStatic(pathname) {
 }
 
 // ── Try to auto-refresh and retry once ───────────────────────────
-async function withAutoRefresh(fn, clientToken) {
+async function withAutoRefresh(fn, clientToken, clientRefreshToken) {
   try {
     return await fn(clientToken);
   } catch (error) {
     const isAuth = error.status === 401 || (error.message && error.message.toLowerCase().includes('unauthorized'));
-    if (!isAuth || !HAS_REFRESH) throw error; // not recoverable
+    if (!isAuth || !hasRefresh(clientRefreshToken)) throw error;
 
-    // Try refreshing the token
-    const newToken = await refreshAccessToken();
-    if (!newToken) throw error; // refresh failed, surface original error
+    const refreshed = await refreshAccessToken(clientRefreshToken);
+    if (!refreshed?.access_token) throw error;
 
-    // Retry with refreshed token
-    return await fn(newToken, true); // second arg = was_refreshed
+    return await fn(refreshed.access_token, true, refreshed);
   }
 }
 
 // ── Main handler (Vercel serverless entry) ───────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Access-Token, X-Refresh-Token');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
-  const clientToken = req.headers['x-access-token'] || '';
+  const clientToken = String(req.headers['x-access-token'] || '').trim();
+  const clientRefreshToken = String(req.headers['x-refresh-token'] || '').trim();
 
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     let result;
 
     if (url.pathname === '/api/health') {
-      result = await handleHealth(clientToken);
+      result = await handleHealth(clientToken, clientRefreshToken);
     } else if (url.pathname === '/api/bookmarks') {
       const limit = url.searchParams.get('limit');
-      result = await withAutoRefresh(async (tk, refreshed) => {
+      result = await withAutoRefresh(async (tk, refreshed, refreshPayload) => {
         const r = await handleBookmarks(limit || null, tk || '');
-        if (refreshed) {
-          // Include the new token so the frontend can persist it
-          const fresh = refreshedToken?.token;
-          if (fresh) r.refreshed_token = fresh;
+        if (refreshed && refreshPayload) {
+          if (refreshPayload.access_token) r.refreshed_token = refreshPayload.access_token;
+          if (refreshPayload.refresh_token) r.refreshed_refresh_token = refreshPayload.refresh_token;
+          r.refreshed_expires_in = refreshPayload.expires_in || 7200;
         }
         return r;
-      }, clientToken);
+      }, clientToken, clientRefreshToken);
     } else if (url.pathname === '/api/update-token' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;

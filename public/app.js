@@ -29,6 +29,7 @@ const els = {
   settingsMenu: document.getElementById('settingsMenu'),
   intervalSelect: document.getElementById('intervalSelect'),
   tokenInput: document.getElementById('tokenInput'),
+  refreshTokenInput: document.getElementById('refreshTokenInput'),
   saveTokenBtn: document.getElementById('saveTokenBtn'),
   tokenStatus: document.getElementById('tokenStatus'),
   tweetTemplate: document.getElementById('tweetTemplate'),
@@ -39,6 +40,11 @@ function getClientToken() { return localStorage.getItem('x_access_token') || '';
 function setClientToken(t) {
   if (t) localStorage.setItem('x_access_token', t);
   else localStorage.removeItem('x_access_token');
+}
+function getClientRefreshToken() { return localStorage.getItem('x_refresh_token') || ''; }
+function setClientRefreshToken(t) {
+  if (t) localStorage.setItem('x_refresh_token', t);
+  else localStorage.removeItem('x_refresh_token');
 }
 
 function fmtDate(v) {
@@ -157,11 +163,10 @@ function updateState(payload) {
   state.source = payload.source || '—';
   state.newCount = state.previousIds.size ? state.items.reduce((c, i) => c + (state.previousIds.has(i.id) ? 0 : 1), 0) : 0;
 
-  // Save auto-refreshed token from server
-  if (payload.refreshed_token) {
-    setClientToken(payload.refreshed_token);
-    tokenBanner('token auto-refreshed ✓');
-  }
+  // Save auto-refreshed tokens from server. X rotates refresh tokens on every refresh.
+  if (payload.refreshed_token) setClientToken(payload.refreshed_token);
+  if (payload.refreshed_refresh_token) setClientRefreshToken(payload.refreshed_refresh_token);
+  if (payload.refreshed_token || payload.refreshed_refresh_token) tokenBanner('token auto-refreshed ✓');
 
   if (state.newCount > 0) banner(`${state.newCount} new`);
   else banner('');
@@ -175,9 +180,11 @@ async function refresh() {
   renderStats();
   try {
     const token = getClientToken();
-    const headers = { 'cache': 'no-store' };
+    const refreshToken = getClientRefreshToken();
+    const headers = {};
     if (token) headers['X-Access-Token'] = token;
-    const r = await fetch(`/api/bookmarks?limit=50&t=${Date.now()}`, headers);
+    if (refreshToken) headers['X-Refresh-Token'] = refreshToken;
+    const r = await fetch(`/api/bookmarks?limit=50&t=${Date.now()}`, { cache: 'no-store', headers });
     const p = await r.json().catch(() => ({}));
     if (!r.ok || !p.ok) {
       const isAuth = p?.error?.is_auth_error || r.status === 401;
@@ -223,21 +230,25 @@ function tokenBanner(msg, kind) {
 }
 
 function saveToken() {
-  const val = els.tokenInput?.value?.trim() || '';
-  if (!val) { tokenBanner('paste a token first', 'error'); return; }
-  setClientToken(val);
-  els.tokenInput.value = '';
-  tokenBanner('saved! refresh to apply ✓');
+  const accessVal = els.tokenInput?.value?.trim() || '';
+  const refreshVal = els.refreshTokenInput?.value?.trim() || '';
+  if (!accessVal && !refreshVal) { tokenBanner('paste an access or refresh token first', 'error'); return; }
+  if (accessVal) setClientToken(accessVal);
+  if (refreshVal) setClientRefreshToken(refreshVal);
+  if (els.tokenInput) els.tokenInput.value = '';
+  if (els.refreshTokenInput) els.refreshTokenInput.value = '';
+  tokenBanner(refreshVal ? 'saved with auto-refresh ✓' : 'access token saved ✓');
   setTimeout(() => { els.settingsOpen = false; els.settingsMenu.classList.add('hidden'); }, 800);
 }
 
 // Load saved token into the field indicator
 document.addEventListener('DOMContentLoaded', () => {
-  if (getClientToken()) tokenBanner('custom token set ✓');
+  if (getClientToken() || getClientRefreshToken()) tokenBanner(getClientRefreshToken() ? 'auto-refresh token set ✓' : 'custom access token set ✓');
 });
 
 els.saveTokenBtn.addEventListener('click', saveToken);
 els.tokenInput?.addEventListener('keydown', e => { if (e.key === 'Enter') saveToken(); });
+els.refreshTokenInput?.addEventListener('keydown', e => { if (e.key === 'Enter') saveToken(); });
 
 els.refreshBtn.addEventListener('click', refresh);
 els.filterInput.addEventListener('input', e => { state.filter = e.target.value.trim(); renderFeed(); });

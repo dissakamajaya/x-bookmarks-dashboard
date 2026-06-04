@@ -62,11 +62,10 @@
                   </div>
                   <div class="menu-divider"></div>
                   <div class="menu-item" style="flex-direction:column;align-items:stretch;gap:6px">
-                    <span style="font-size:11px;color:var(--muted)">X API Token</span>
-                    <div style="display:flex;gap:6px">
-                      <input id="tokenInput" type="password" placeholder="Paste new token..." style="flex:1;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);outline:none" />
-                      <button id="saveTokenBtn" class="btn" style="height:auto;padding:6px 12px;font-size:12px">Save</button>
-                    </div>
+                    <span style="font-size:11px;color:var(--muted)">X API tokens</span>
+                    <input id="tokenInput" type="password" placeholder="Access token (:at:)" style="flex:1;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);outline:none" />
+                    <input id="refreshTokenInput" type="password" placeholder="Refresh token (:rt:) for auto-refresh" style="flex:1;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);outline:none" />
+                    <button id="saveTokenBtn" class="btn" style="height:auto;padding:6px 12px;font-size:12px">Save</button>
                     <span id="tokenStatus" style="font-size:11px;color:var(--muted)"></span>
                   </div>
             </div>
