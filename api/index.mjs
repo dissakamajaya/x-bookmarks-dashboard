@@ -2,6 +2,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// ── Token resolution ─────────────────────────────────────────────
+function resolveToken(headerToken) {
+  // Priority: client header override > environment variable
+  return headerToken || process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '';
+}
+
 // ── Env ──────────────────────────────────────────────────────────
 function loadEnvFile(dotenvPath = resolve(process.cwd(), '.env')) {
   if (!existsSync(dotenvPath)) return;
@@ -21,7 +27,7 @@ function loadEnvFile(dotenvPath = resolve(process.cwd(), '.env')) {
 loadEnvFile();
 
 // ── Config ───────────────────────────────────────────────────────
-const ACCESS_TOKEN = process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '';
+const DEFAULT_ACCESS_TOKEN = resolveToken();
 const USER_ID_ENV = process.env.X_USER_ID || '';
 const USERNAME_ENV = process.env.X_USERNAME || '';
 const DEFAULT_LIMIT = clamp(process.env.BOOKMARK_LIMIT, 50, 1, 100);
@@ -58,14 +64,15 @@ function apiUrl(base, path, query = {}) {
 }
 function buildTweetUrl(id) { return `https://x.com/i/web/status/${id}`; }
 
-async function fetchJson(path, { query = {}, base, signal } = {}) {
-  if (!ACCESS_TOKEN) throw new Error('Missing X_ACCESS_TOKEN.');
+async function fetchJson(path, { query = {}, base, signal, token } = {}) {
+  const tk = token || DEFAULT_ACCESS_TOKEN;
+  if (!tk) throw new Error('Missing X_ACCESS_TOKEN.');
   const bases = base ? [base] : API_BASES;
   let lastError;
   for (const apiBase of bases) {
     const url = apiUrl(apiBase, path, query);
     try {
-      const resp = await fetch(url, { signal, headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, 'User-Agent': 'x-bookmarks-dashboard/0.1' } });
+      const resp = await fetch(url, { signal, headers: { Authorization: `Bearer ${tk}`, 'User-Agent': 'x-bookmarks-dashboard/0.1' } });
       const raw = await resp.text();
       let body = null;
       if (raw) {
@@ -88,13 +95,13 @@ async function fetchJson(path, { query = {}, base, signal } = {}) {
   throw lastError || new Error('X API request failed');
 }
 
-async function resolveCurrentUser() {
+async function resolveCurrentUser(token) {
   const now = Date.now();
   if (userCache && userCache.expires > now) return userCache.value;
 
   if (USER_ID_ENV) {
     try {
-      const lookup = await fetchJson(`/2/users/${USER_ID_ENV}`, { query: { 'user.fields': 'id,name,profile_image_url,username,verified' } });
+      const lookup = await fetchJson(`/2/users/${USER_ID_ENV}`, { query: { 'user.fields': 'id,name,profile_image_url,username,verified' }, token });
       const u = lookup.data?.data;
       if (u?.id) { u.source = 'env'; userCache = { value: u, expires: now + CACHE_TTL_MS }; return u; }
     } catch { /* fall through */ }
@@ -104,7 +111,7 @@ async function resolveCurrentUser() {
   }
 
   try {
-    const r = await fetchJson('/2/users/me');
+    const r = await fetchJson('/2/users/me', { token });
     const u = r.data?.data;
     if (!u?.id) throw new Error('/2/users/me returned no id.');
     u.source = 'api';
@@ -112,7 +119,7 @@ async function resolveCurrentUser() {
     return u;
   } catch (e) {
     if (!USERNAME_ENV) throw new Error('Set X_USERNAME or X_USER_ID to resolve user.');
-    const lookup = await fetchJson(`/2/users/by/username/${encodeURIComponent(USERNAME_ENV)}`);
+    const lookup = await fetchJson(`/2/users/by/username/${encodeURIComponent(USERNAME_ENV)}`, { token });
     const u = lookup.data?.data;
     if (!u?.id) throw new Error(`Cannot resolve @${USERNAME_ENV}.`);
     u.source = 'username';
@@ -139,18 +146,19 @@ function normalizeTweet(tweet, includes = {}) {
 
 // ── Route handlers ───────────────────────────────────────────────
 
-async function handleHealth() {
-  return { ok: true, ready: Boolean(ACCESS_TOKEN), has_user_id: Boolean(USER_ID_ENV), has_username: Boolean(USERNAME_ENV), api_base: API_BASES[0], default_limit: DEFAULT_LIMIT, cache_ttl_ms: CACHE_TTL_MS };
+async function handleHealth(token) {
+  const tk = token || DEFAULT_ACCESS_TOKEN;
+  return { ok: true, ready: Boolean(tk), has_user_id: Boolean(USER_ID_ENV), has_username: Boolean(USERNAME_ENV), api_base: API_BASES[0], default_limit: DEFAULT_LIMIT, cache_ttl_ms: CACHE_TTL_MS, token_source: token ? 'client' : 'env' };
 }
 
-async function handleBookmarks(limit) {
+async function handleBookmarks(limit, token) {
   limit = clamp(limit, DEFAULT_LIMIT, 1, 100);
   const cacheKey = String(limit);
   const now = Date.now();
   const cached = bookmarksCache.get(cacheKey);
   if (cached && cached.expires > now) return { ...cached.value, cached: true };
 
-  const user = await resolveCurrentUser();
+  const user = await resolveCurrentUser(token);
   const items = [];
   let paginationToken = null, lastResponse = null;
 
@@ -163,7 +171,7 @@ async function handleBookmarks(limit) {
       'user.fields': 'id,name,profile_image_url,username,verified',
     };
     if (paginationToken) query.pagination_token = paginationToken;
-    const page = await fetchJson(`/2/users/${user.id}/bookmarks`, { query });
+    const page = await fetchJson(`/2/users/${user.id}/bookmarks`, { query, token });
     lastResponse = page;
     const data = page.data?.data || [];
     const includes = page.data?.includes || {};
@@ -203,14 +211,29 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
+  // Read token override from client header
+  const clientToken = req.headers['x-access-token'] || '';
+
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     let result;
 
     if (url.pathname === '/api/health') {
-      result = await handleHealth();
+      result = await handleHealth(clientToken);
     } else if (url.pathname === '/api/bookmarks') {
-      result = await handleBookmarks(url.searchParams.get('limit'));
+      result = await handleBookmarks(url.searchParams.get('limit'), clientToken);
+    } else if (url.pathname === '/api/update-token' && req.method === 'POST') {
+      // Read body for token update
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try {
+        const parsed = JSON.parse(body);
+        const newToken = parsed.token || '';
+        if (!newToken) throw new Error('Missing token');
+        result = { ok: true, message: 'Token accepted. Paste it in the dashboard settings field to save locally.' };
+      } catch (e) {
+        result = { ok: false, error: { message: e.message } };
+      }
     } else if (url.pathname.startsWith('/api/')) {
       res.statusCode = 404;
       res.setHeader('Content-Type', 'application/json');
@@ -231,12 +254,19 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     res.end(body);
   } catch (error) {
+    const isAuth = error.status === 401 || (error.message && error.message.toLowerCase().includes('unauthorized'));
     res.statusCode = error.status || 500;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
       ok: false,
-      error: { message: error.message || 'Server error', detail: error.body || null,
-        hint: ACCESS_TOKEN ? 'Set X_USERNAME or X_USER_ID if /2/users/me is unavailable.' : 'Set X_ACCESS_TOKEN.' },
+      error: {
+        message: error.message || 'Server error',
+        detail: error.body || null,
+        hint: isAuth
+          ? 'X token expired. Generate a new one at https://developer.x.com → your app → User Auth Settings → Generate → paste in settings ⚙'
+          : (DEFAULT_ACCESS_TOKEN ? 'Set X_USERNAME or X_USER_ID if /2/users/me is unavailable.' : 'Set X_ACCESS_TOKEN.'),
+        is_auth_error: isAuth,
+      },
     }));
   }
 }

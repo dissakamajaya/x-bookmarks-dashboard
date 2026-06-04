@@ -28,8 +28,18 @@ const els = {
   settingsBtn: document.getElementById('settingsBtn'),
   settingsMenu: document.getElementById('settingsMenu'),
   intervalSelect: document.getElementById('intervalSelect'),
+  tokenInput: document.getElementById('tokenInput'),
+  saveTokenBtn: document.getElementById('saveTokenBtn'),
+  tokenStatus: document.getElementById('tokenStatus'),
   tweetTemplate: document.getElementById('tweetTemplate'),
 };
+
+// ── Token persistence (localStorage) ────────────────────────────
+function getClientToken() { return localStorage.getItem('x_access_token') || ''; }
+function setClientToken(t) {
+  if (t) localStorage.setItem('x_access_token', t);
+  else localStorage.removeItem('x_access_token');
+}
 
 function fmtDate(v) {
   if (!v) return '';
@@ -157,13 +167,26 @@ async function refresh() {
   els.refreshBtn.disabled = true;
   renderStats();
   try {
-    const r = await fetch(`/api/bookmarks?limit=50&t=${Date.now()}`, { cache: 'no-store' });
+    const token = getClientToken();
+    const headers = { 'cache': 'no-store' };
+    if (token) headers['X-Access-Token'] = token;
+    const r = await fetch(`/api/bookmarks?limit=50&t=${Date.now()}`, headers);
     const p = await r.json().catch(() => ({}));
-    if (!r.ok || !p.ok) throw new Error(p?.error?.message || `HTTP ${r.status}`);
+    if (!r.ok || !p.ok) {
+      const isAuth = p?.error?.is_auth_error || r.status === 401;
+      if (isAuth) {
+        banner(
+          'Token expired. Generate a new one at developer.x.com → your app → User Auth → Generate → paste in ⚙ settings',
+          'error'
+        );
+        tokenBanner('expired — paste new token in settings ⚙', 'error');
+      }
+      throw new Error(p?.error?.message || `HTTP ${r.status}`);
+    }
     updateState(p);
   } catch (e) {
     state.lastError = e.message;
-    banner(`Error: ${state.lastError}`, 'error');
+    if (!e.message.includes('Token expired')) banner(`Error: ${state.lastError}`, 'error');
   } finally {
     state.isRefreshing = false;
     els.refreshBtn.disabled = false;
@@ -184,6 +207,30 @@ function startInterval(ms) {
   if (state.intervalId) { clearInterval(state.intervalId); state.intervalId = null; }
   if (ms > 0) state.intervalId = setInterval(refresh, ms);
 }
+
+// ── Token UI ────────────────────────────────────────────────────
+function tokenBanner(msg, kind) {
+  if (!els.tokenStatus) return;
+  els.tokenStatus.textContent = msg || '';
+  els.tokenStatus.style.color = kind === 'error' ? '#b44852' : 'var(--muted)';
+}
+
+function saveToken() {
+  const val = els.tokenInput?.value?.trim() || '';
+  if (!val) { tokenBanner('paste a token first', 'error'); return; }
+  setClientToken(val);
+  els.tokenInput.value = '';
+  tokenBanner('saved! refresh to apply ✓');
+  setTimeout(() => { els.settingsOpen = false; els.settingsMenu.classList.add('hidden'); }, 800);
+}
+
+// Load saved token into the field indicator
+document.addEventListener('DOMContentLoaded', () => {
+  if (getClientToken()) tokenBanner('custom token set ✓');
+});
+
+els.saveTokenBtn.addEventListener('click', saveToken);
+els.tokenInput?.addEventListener('keydown', e => { if (e.key === 'Enter') saveToken(); });
 
 els.refreshBtn.addEventListener('click', refresh);
 els.filterInput.addEventListener('input', e => { state.filter = e.target.value.trim(); renderFeed(); });

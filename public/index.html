@@ -48,17 +48,27 @@
                 <span>Last refresh</span>
                 <strong id="refreshValue">—</strong>
               </div>
+              <div class="menu-divider"></div>
               <div class="menu-item">
                 <span>Refresh interval</span>
-                <select id="intervalSelect" class="menu-select">
-                  <option value="0">Manual only</option>
-                  <option value="15000">15s</option>
-                  <option value="30000" selected>30s</option>
-                  <option value="60000">60s</option>
-                  <option value="120000">2m</option>
-                  <option value="300000">5m</option>
-                </select>
-              </div>
+                    <select id="intervalSelect" class="menu-select">
+                      <option value="0">Manual only</option>
+                      <option value="15000">15s</option>
+                      <option value="30000" selected>30s</option>
+                      <option value="60000">60s</option>
+                      <option value="120000">2m</option>
+                      <option value="300000">5m</option>
+                    </select>
+                  </div>
+                  <div class="menu-divider"></div>
+                  <div class="menu-item" style="flex-direction:column;align-items:stretch;gap:6px">
+                    <span style="font-size:11px;color:var(--muted)">X API Token</span>
+                    <div style="display:flex;gap:6px">
+                      <input id="tokenInput" type="password" placeholder="Paste new token..." style="flex:1;font-size:12px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);outline:none" />
+                      <button id="saveTokenBtn" class="btn" style="height:auto;padding:6px 12px;font-size:12px">Save</button>
+                    </div>
+                    <span id="tokenStatus" style="font-size:11px;color:var(--muted)"></span>
+                  </div>
             </div>
           </div>
         </div>
