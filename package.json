@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Local dashboard for the latest bookmarked posts from X/Twitter.",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node dev/server.js",
+    "dev": "node --watch dev/server.js"
   }
 }
