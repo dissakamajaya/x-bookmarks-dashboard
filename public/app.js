@@ -156,6 +156,13 @@ function updateState(payload) {
   state.lastError = null;
   state.source = payload.source || '—';
   state.newCount = state.previousIds.size ? state.items.reduce((c, i) => c + (state.previousIds.has(i.id) ? 0 : 1), 0) : 0;
+
+  // Save auto-refreshed token from server
+  if (payload.refreshed_token) {
+    setClientToken(payload.refreshed_token);
+    tokenBanner('token auto-refreshed ✓');
+  }
+
   if (state.newCount > 0) banner(`${state.newCount} new`);
   else banner('');
   renderStats();

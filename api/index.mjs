@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 
 // ── Token resolution ─────────────────────────────────────────────
 function resolveToken(headerToken) {
-  // Priority: client header override > environment variable
   return headerToken || process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '';
 }
 
@@ -35,6 +34,16 @@ const CACHE_TTL_MS = clamp(process.env.CACHE_TTL_MS, 15000, 0, 300000);
 const API_BASES = unique([normalizeBase(process.env.X_API_BASE_URL || 'https://api.x.com'), 'https://api.twitter.com']);
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public/', import.meta.url)));
 
+// ── Refresh credentials (used to auto-refresh expired tokens) ────
+const REFRESH_CLIENT_ID = process.env.X_CLIENT_ID || '';
+const REFRESH_CLIENT_SECRET = process.env.X_CLIENT_SECRET || '';
+const REFRESH_TOKEN_ENV = process.env.X_REFRESH_TOKEN || '';
+const HAS_REFRESH = Boolean(REFRESH_CLIENT_ID && REFRESH_CLIENT_SECRET && REFRESH_TOKEN_ENV);
+
+// In-memory cache for tokens (survives warm serverless instances)
+let refreshedToken = null;        // { token, expires_at }
+let refreshedRefreshToken = null;
+
 let userCache = null;
 let bookmarksCache = new Map();
 
@@ -64,15 +73,61 @@ function apiUrl(base, path, query = {}) {
 }
 function buildTweetUrl(id) { return `https://x.com/i/web/status/${id}`; }
 
+// ── Refresh expired tokens ───────────────────────────────────────
+async function refreshAccessToken() {
+  if (!HAS_REFRESH) return null;
+  const data = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshedRefreshToken || REFRESH_TOKEN_ENV,
+  });
+  const creds = Buffer.from(`${REFRESH_CLIENT_ID}:${REFRESH_CLIENT_SECRET}`).toString('base64');
+  try {
+    const resp = await fetch('https://api.x.com/2/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${creds}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: data.toString(),
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      console.error(`Token refresh failed (${resp.status}): ${body.slice(0, 200)}`);
+      return null;
+    }
+    const json = await resp.json();
+    const newToken = json.access_token || '';
+    const newRefresh = json.refresh_token || '';
+    if (!newToken) return null;
+    // Cache in memory
+    refreshedToken = { token: newToken, expires_at: Date.now() + (json.expires_in || 7200) * 1000 };
+    if (newRefresh) refreshedRefreshToken = newRefresh;
+    return newToken;
+  } catch (e) {
+    console.error(`Token refresh error: ${e.message}`);
+    return null;
+  }
+}
+
+function getEffectiveToken(token) {
+  // Priority: per-request client header > refreshed token > env fallback
+  if (token) return token;
+  if (refreshedToken && refreshedToken.expires_at > Date.now()) return refreshedToken.token;
+  return DEFAULT_ACCESS_TOKEN;
+}
+
 async function fetchJson(path, { query = {}, base, signal, token } = {}) {
-  const tk = token || DEFAULT_ACCESS_TOKEN;
+  const tk = getEffectiveToken(token);
   if (!tk) throw new Error('Missing X_ACCESS_TOKEN.');
   const bases = base ? [base] : API_BASES;
   let lastError;
   for (const apiBase of bases) {
     const url = apiUrl(apiBase, path, query);
     try {
-      const resp = await fetch(url, { signal, headers: { Authorization: `Bearer ${tk}`, 'User-Agent': 'x-bookmarks-dashboard/0.1' } });
+      const resp = await fetch(url, {
+        signal,
+        headers: { Authorization: `Bearer ${tk}`, 'User-Agent': 'x-bookmarks-dashboard/0.1' },
+      });
       const raw = await resp.text();
       let body = null;
       if (raw) {
@@ -147,8 +202,14 @@ function normalizeTweet(tweet, includes = {}) {
 // ── Route handlers ───────────────────────────────────────────────
 
 async function handleHealth(token) {
-  const tk = token || DEFAULT_ACCESS_TOKEN;
-  return { ok: true, ready: Boolean(tk), has_user_id: Boolean(USER_ID_ENV), has_username: Boolean(USERNAME_ENV), api_base: API_BASES[0], default_limit: DEFAULT_LIMIT, cache_ttl_ms: CACHE_TTL_MS, token_source: token ? 'client' : 'env' };
+  const tk = getEffectiveToken(token);
+  return {
+    ok: true, ready: Boolean(tk),
+    has_user_id: Boolean(USER_ID_ENV), has_username: Boolean(USERNAME_ENV),
+    has_refresh: HAS_REFRESH,
+    api_base: API_BASES[0], default_limit: DEFAULT_LIMIT, cache_ttl_ms: CACHE_TTL_MS,
+    token_source: token ? 'client' : refreshedToken ? 'refresh' : 'env',
+  };
 }
 
 async function handleBookmarks(limit, token) {
@@ -186,7 +247,10 @@ async function handleBookmarks(limit, token) {
   const seen = new Set();
   const deduped = items.filter(item => { if (seen.has(item.id)) return false; seen.add(item.id); return true; });
 
-  const result = { ok: true, refreshed_at: new Date().toISOString(), user, count: deduped.length, items: deduped, pagination_token: lastResponse?.data?.meta?.next_token || null, source: lastResponse?.base || API_BASES[0] };
+  const result = {
+    ok: true, refreshed_at: new Date().toISOString(), user, count: deduped.length, items: deduped,
+    pagination_token: lastResponse?.data?.meta?.next_token || null, source: lastResponse?.base || API_BASES[0],
+  };
   bookmarksCache.set(cacheKey, { value: result, expires: now + CACHE_TTL_MS });
   return { ...result, cached: false };
 }
@@ -204,14 +268,29 @@ async function serveStatic(pathname) {
   }
 }
 
+// ── Try to auto-refresh and retry once ───────────────────────────
+async function withAutoRefresh(fn, clientToken) {
+  try {
+    return await fn(clientToken);
+  } catch (error) {
+    const isAuth = error.status === 401 || (error.message && error.message.toLowerCase().includes('unauthorized'));
+    if (!isAuth || !HAS_REFRESH) throw error; // not recoverable
+
+    // Try refreshing the token
+    const newToken = await refreshAccessToken();
+    if (!newToken) throw error; // refresh failed, surface original error
+
+    // Retry with refreshed token
+    return await fn(newToken, true); // second arg = was_refreshed
+  }
+}
+
 // ── Main handler (Vercel serverless entry) ───────────────────────
 export default async function handler(req, res) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
-  // Read token override from client header
   const clientToken = req.headers['x-access-token'] || '';
 
   try {
@@ -221,16 +300,24 @@ export default async function handler(req, res) {
     if (url.pathname === '/api/health') {
       result = await handleHealth(clientToken);
     } else if (url.pathname === '/api/bookmarks') {
-      result = await handleBookmarks(url.searchParams.get('limit'), clientToken);
+      const limit = url.searchParams.get('limit');
+      result = await withAutoRefresh(async (tk, refreshed) => {
+        const r = await handleBookmarks(limit || null, tk || '');
+        if (refreshed) {
+          // Include the new token so the frontend can persist it
+          const fresh = refreshedToken?.token;
+          if (fresh) r.refreshed_token = fresh;
+        }
+        return r;
+      }, clientToken);
     } else if (url.pathname === '/api/update-token' && req.method === 'POST') {
-      // Read body for token update
       let body = '';
       for await (const chunk of req) body += chunk;
       try {
         const parsed = JSON.parse(body);
         const newToken = parsed.token || '';
         if (!newToken) throw new Error('Missing token');
-        result = { ok: true, message: 'Token accepted. Paste it in the dashboard settings field to save locally.' };
+        result = { ok: true, message: 'Token accepted. Saved to browser.' };
       } catch (e) {
         result = { ok: false, error: { message: e.message } };
       }
@@ -263,7 +350,7 @@ export default async function handler(req, res) {
         message: error.message || 'Server error',
         detail: error.body || null,
         hint: isAuth
-          ? 'X token expired. Generate a new one at https://developer.x.com → your app → User Auth Settings → Generate → paste in settings ⚙'
+          ? 'Token expired and auto-refresh failed. Generate a new one at developer.x.com → User Auth → Generate → paste in ⚙ settings'
           : (DEFAULT_ACCESS_TOKEN ? 'Set X_USERNAME or X_USER_ID if /2/users/me is unavailable.' : 'Set X_ACCESS_TOKEN.'),
         is_auth_error: isAuth,
       },
