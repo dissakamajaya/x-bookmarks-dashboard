@@ -2,6 +2,7 @@
   "name": "x-bookmarks-dashboard",
   "version": "0.1.0",
   "private": true,
+  "main": "api/index.mjs",
   "type": "module",
   "description": "Local dashboard for the latest bookmarked posts from X/Twitter.",
   "scripts": {
