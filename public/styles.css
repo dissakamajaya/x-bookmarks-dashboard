@@ -52,6 +52,7 @@ h1{font-size:20px;font-weight:700;letter-spacing:-.02em}
 .translate-btn{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--accent);font-weight:600;cursor:pointer;margin-bottom:8px;transition:background .15s}
 .translate-btn:hover{background:var(--surface-hover);border-color:var(--line-strong)}
 .translate-btn:disabled{opacity:.5;cursor:wait}
+.translated-marker{font-size:11px;color:var(--accent);font-weight:600;margin-bottom:8px;display:inline-block}
 .tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .tag{font-size:11px;padding:3px 8px;border-radius:6px;font-weight:600;border:1px solid var(--line);color:var(--muted)}
 .media{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px}

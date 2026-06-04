@@ -68,33 +68,17 @@ async function translateText(text, from) {
 
 async function renderTranslateBtn(el, tweet) {
   if (!tweet.lang || tweet.lang === 'en' || tweet.lang === 'und') return;
-  const btn = document.createElement('button');
-  btn.className = 'translate-btn';
-  btn.textContent = `Translate (${tweet.lang.toUpperCase()})`;
-  btn.dataset.lang = tweet.lang;
-  btn.dataset.text = tweet.text;
-  let translated = false;
-  btn.onclick = async () => {
-    if (translated) {
-      // Toggle back to original
-      el.textContent = tweet.text;
-      btn.textContent = `Translate (${tweet.lang.toUpperCase()})`;
-      translated = false;
-      return;
-    }
-    btn.textContent = 'Translating…';
-    btn.disabled = true;
-    const result = await translateText(tweet.text, tweet.lang);
-    btn.disabled = false;
-    if (result) {
-      el.textContent = result;
-      btn.textContent = '← Original';
-      translated = true;
-    } else {
-      btn.textContent = `Translate (${tweet.lang.toUpperCase()})`;
-    }
-  };
-  el.parentNode.insertBefore(btn, el.nextSibling);
+  const original = tweet.text;
+  // Auto-translate in the background
+  const result = await translateText(original, tweet.lang);
+  if (result) {
+    el.textContent = result;
+    // Add an indicator showing it was translated
+    const info = document.createElement('span');
+    info.className = 'translated-marker';
+    info.textContent = `EN (from ${tweet.lang.toUpperCase()})`;
+    el.parentNode.insertBefore(info, el.nextSibling);
+  }
 }
 
 function fmtDate(v) {
