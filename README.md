@@ -21,6 +21,14 @@ Fill in at least:
 
 - `X_ACCESS_TOKEN` for your OAuth 2.0 user access token
 
+If you want auto-refresh, also set:
+
+- `X_CLIENT_ID`
+- `X_REFRESH_TOKEN`
+- `X_CLIENT_SECRET` only if your app is a confidential client
+
+The server refreshes the access token about once an hour when those values are present.
+
 If the token cannot call `GET /2/users/me`, set one of these too:
 
 - `X_USER_ID`

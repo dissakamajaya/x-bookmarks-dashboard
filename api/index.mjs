@@ -46,11 +46,13 @@ const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public/', import.meta.url))
 const REFRESH_CLIENT_ID = String(process.env.X_CLIENT_ID || '').trim();
 const REFRESH_CLIENT_SECRET = String(process.env.X_CLIENT_SECRET || '').trim();
 const REFRESH_TOKEN_ENV = String(process.env.X_REFRESH_TOKEN || '').trim();
-const HAS_REFRESH = Boolean(REFRESH_CLIENT_ID && REFRESH_CLIENT_SECRET && REFRESH_TOKEN_ENV);
+const HAS_REFRESH = Boolean(REFRESH_CLIENT_ID && REFRESH_TOKEN_ENV);
+const REFRESH_INTERVAL_MS = clamp(process.env.X_REFRESH_INTERVAL_MS, 60 * 60 * 1000, 5 * 60 * 1000, 12 * 60 * 60 * 1000);
 
 // In-memory cache for tokens (survives warm serverless instances)
 let refreshedToken = null;        // { token, expires_at }
 let refreshedRefreshToken = null;
+let lastRefreshAt = 0;
 
 let userCache = null;
 let bookmarksCache = new Map();
@@ -84,19 +86,20 @@ function buildTweetUrl(id) { return `https://x.com/i/web/status/${id}`; }
 // ── Refresh expired tokens ───────────────────────────────────────
 async function refreshAccessToken(refreshOverride) {
   const refreshToken = resolveRefreshToken(refreshOverride);
-  if (!(REFRESH_CLIENT_ID && REFRESH_CLIENT_SECRET && refreshToken)) return null;
+  if (!(REFRESH_CLIENT_ID && refreshToken)) return null;
   const data = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
+    client_id: REFRESH_CLIENT_ID,
   });
-  const creds = Buffer.from(`${REFRESH_CLIENT_ID}:${REFRESH_CLIENT_SECRET}`).toString('base64');
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (REFRESH_CLIENT_SECRET) {
+    headers.Authorization = `Basic ${Buffer.from(`${REFRESH_CLIENT_ID}:${REFRESH_CLIENT_SECRET}`).toString('base64')}`;
+  }
   try {
     const resp = await fetch('https://api.x.com/2/oauth2/token', {
       method: 'POST',
-      headers: {
-        'Authorization': `Basic ${creds}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+      headers,
       body: data.toString(),
     });
     if (!resp.ok) {
@@ -109,6 +112,7 @@ async function refreshAccessToken(refreshOverride) {
     const newRefresh = String(json.refresh_token || '').trim();
     if (!newToken) return null;
     refreshedToken = { token: newToken, expires_at: Date.now() + (json.expires_in || 7200) * 1000 };
+    lastRefreshAt = Date.now();
     if (newRefresh) refreshedRefreshToken = newRefresh;
     return { access_token: newToken, refresh_token: newRefresh, expires_in: json.expires_in || 7200 };
   } catch (e) {
@@ -117,10 +121,26 @@ async function refreshAccessToken(refreshOverride) {
   }
 }
 
+function shouldRefreshToken(refreshOverride) {
+  if (!(REFRESH_CLIENT_ID && resolveRefreshToken(refreshOverride))) return false;
+  if (!refreshedToken) return true;
+  const now = Date.now();
+  if (now - lastRefreshAt >= REFRESH_INTERVAL_MS) return true;
+  if (refreshedToken.expires_at <= now + 5 * 60 * 1000) return true;
+  return false;
+}
+
+async function refreshIfNeeded(refreshOverride) {
+  if (!shouldRefreshToken(refreshOverride)) return null;
+  const refreshed = await refreshAccessToken(refreshOverride);
+  return refreshed?.access_token || null;
+}
+
+
 function getEffectiveToken(token) {
-  // Priority: per-request client header > refreshed token > env fallback
-  if (token) return token;
+  // Priority: refreshed token > per-request client header > env fallback
   if (refreshedToken && refreshedToken.expires_at > Date.now()) return refreshedToken.token;
+  if (token) return token;
   return DEFAULT_ACCESS_TOKEN;
 }
 
@@ -279,8 +299,10 @@ async function serveStatic(pathname) {
 
 // ── Try to auto-refresh and retry once ───────────────────────────
 async function withAutoRefresh(fn, clientToken, clientRefreshToken) {
+  const refreshedTokenNow = await refreshIfNeeded(clientRefreshToken);
+  const effectiveToken = refreshedTokenNow || clientToken;
   try {
-    return await fn(clientToken);
+    return await fn(effectiveToken);
   } catch (error) {
     const isAuth = error.status === 401 || (error.message && error.message.toLowerCase().includes('unauthorized'));
     if (!isAuth || !hasRefresh(clientRefreshToken)) throw error;

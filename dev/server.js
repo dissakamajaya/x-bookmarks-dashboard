@@ -31,14 +31,21 @@ const API_BASES = unique([
   normalizeBase(process.env.X_API_BASE_URL || 'https://api.x.com'),
   'https://api.twitter.com',
 ]);
-const ACCESS_TOKEN = process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '';
+const DEFAULT_ACCESS_TOKEN = String(process.env.X_ACCESS_TOKEN || process.env.X_USER_ACCESS_TOKEN || '').trim();
 const USER_ID = process.env.X_USER_ID || '';
 const USERNAME = process.env.X_USERNAME || '';
 const DEFAULT_LIMIT = clampNumber(process.env.BOOKMARK_LIMIT, 50, 1, 100);
 const CACHE_TTL_MS = clampNumber(process.env.CACHE_TTL_MS, 15000, 0, 300000);
+const REFRESH_CLIENT_ID = String(process.env.X_CLIENT_ID || '').trim();
+const REFRESH_CLIENT_SECRET = String(process.env.X_CLIENT_SECRET || '').trim();
+const REFRESH_TOKEN_ENV = String(process.env.X_REFRESH_TOKEN || '').trim();
+const REFRESH_INTERVAL_MS = clampNumber(process.env.X_REFRESH_INTERVAL_MS, 60 * 60 * 1000, 5 * 60 * 1000, 12 * 60 * 60 * 1000);
 
 let userCache = null;
 let bookmarksCache = new Map();
+let refreshedToken = null;
+let refreshedRefreshToken = null;
+let lastRefreshAt = 0;
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -61,6 +68,24 @@ function unique(values) {
 
 function normalizeBase(value) {
   return String(value || '').replace(/\/$/, '');
+}
+
+function resolveToken(headerToken) {
+  return String(headerToken || DEFAULT_ACCESS_TOKEN || '').trim();
+}
+
+function resolveRefreshToken(headerToken) {
+  return String(headerToken || refreshedRefreshToken || REFRESH_TOKEN_ENV || '').trim();
+}
+
+function hasRefresh(headerToken) {
+  return Boolean(REFRESH_CLIENT_ID && resolveRefreshToken(headerToken));
+}
+
+function getEffectiveToken(token) {
+  if (refreshedToken && refreshedToken.expires_at > Date.now()) return refreshedToken.token;
+  if (token) return token;
+  return DEFAULT_ACCESS_TOKEN;
 }
 
 function json(res, status, payload) {
@@ -102,8 +127,9 @@ function apiUrl(base, path, query = {}) {
   return url.toString();
 }
 
-async function fetchJson(path, { query = {}, base, signal } = {}) {
-  if (!ACCESS_TOKEN) {
+async function fetchJson(path, { query = {}, base, signal, token } = {}) {
+  const tk = getEffectiveToken(token);
+  if (!tk) {
     throw new Error('Missing X_ACCESS_TOKEN. Set it to your OAuth 2.0 user access token.');
   }
 
@@ -116,7 +142,7 @@ async function fetchJson(path, { query = {}, base, signal } = {}) {
       const response = await fetch(url, {
         signal,
         headers: {
-          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          Authorization: `Bearer ${tk}`,
           'User-Agent': 'x-bookmarks-dashboard/0.1',
         },
       });
@@ -156,7 +182,7 @@ async function fetchJson(path, { query = {}, base, signal } = {}) {
   throw lastError || new Error('X API request failed');
 }
 
-async function resolveCurrentUser() {
+async function resolveCurrentUser(token) {
   const now = Date.now();
   if (userCache && userCache.expires > now) {
     return userCache.value;
@@ -168,6 +194,7 @@ async function resolveCurrentUser() {
         query: {
           'user.fields': ['id', 'name', 'profile_image_url', 'username', 'verified'].join(','),
         },
+        token,
       });
       const user = lookup.data?.data;
       if (user?.id) {
@@ -190,7 +217,7 @@ async function resolveCurrentUser() {
   }
 
   try {
-    const result = await fetchJson('/2/users/me');
+    const result = await fetchJson('/2/users/me', { token });
     const user = result.data?.data;
     if (!user?.id) {
       throw new Error('X /2/users/me returned no user id.');
@@ -205,7 +232,7 @@ async function resolveCurrentUser() {
       );
     }
 
-    const lookup = await fetchJson(`/2/users/by/username/${encodeURIComponent(USERNAME)}`);
+    const lookup = await fetchJson(`/2/users/by/username/${encodeURIComponent(USERNAME)}`, { token });
     const user = lookup.data?.data;
     if (!user?.id) {
       throw new Error(`Unable to resolve @${USERNAME} to a user id.`);
@@ -276,7 +303,7 @@ function normalizeTweet(tweet, includes = {}) {
   };
 }
 
-async function fetchBookmarksPage(userId, limit, paginationToken) {
+async function fetchBookmarksPage(userId, limit, paginationToken, token) {
   const query = {
     max_results: String(Math.min(100, Math.max(limit, 50))),
     'tweet.fields': [
@@ -304,10 +331,10 @@ async function fetchBookmarksPage(userId, limit, paginationToken) {
     query.pagination_token = paginationToken;
   }
 
-  return fetchJson(`/2/users/${userId}/bookmarks`, { query });
+  return fetchJson(`/2/users/${userId}/bookmarks`, { query, token });
 }
 
-async function getBookmarks(limit = DEFAULT_LIMIT) {
+async function getBookmarks(limit = DEFAULT_LIMIT, token) {
   const cacheKey = String(limit);
   const now = Date.now();
   const cached = bookmarksCache.get(cacheKey);
@@ -315,13 +342,13 @@ async function getBookmarks(limit = DEFAULT_LIMIT) {
     return { ...cached.value, cached: true };
   }
 
-  const user = await resolveCurrentUser();
+  const user = await resolveCurrentUser(token);
   const items = [];
   let paginationToken = null;
   let lastResponse = null;
 
   while (items.length < limit) {
-    const page = await fetchBookmarksPage(user.id, limit, paginationToken);
+    const page = await fetchBookmarksPage(user.id, limit, paginationToken, token);
     lastResponse = page;
     const data = page.data?.data || [];
     const includes = page.data?.includes || {};
@@ -363,6 +390,76 @@ async function getBookmarks(limit = DEFAULT_LIMIT) {
   return { ...result, cached: false };
 }
 
+async function refreshAccessToken(refreshOverride) {
+  const refreshToken = resolveRefreshToken(refreshOverride);
+  if (!(REFRESH_CLIENT_ID && refreshToken)) return null;
+
+  const data = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: REFRESH_CLIENT_ID,
+  });
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (REFRESH_CLIENT_SECRET) {
+    headers.Authorization = `Basic ${Buffer.from(`${REFRESH_CLIENT_ID}:${REFRESH_CLIENT_SECRET}`).toString('base64')}`;
+  }
+
+  try {
+    const response = await fetch('https://api.x.com/2/oauth2/token', {
+      method: 'POST',
+      headers,
+      body: data.toString(),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      console.error(`Token refresh failed (${response.status}): ${body.slice(0, 200)}`);
+      return null;
+    }
+    const jsonBody = await response.json();
+    const newToken = String(jsonBody.access_token || '').trim();
+    const newRefresh = String(jsonBody.refresh_token || '').trim();
+    if (!newToken) return null;
+    refreshedToken = { token: newToken, expires_at: Date.now() + (jsonBody.expires_in || 7200) * 1000 };
+    lastRefreshAt = Date.now();
+    if (newRefresh) refreshedRefreshToken = newRefresh;
+    return { access_token: newToken, refresh_token: newRefresh, expires_in: jsonBody.expires_in || 7200 };
+  } catch (error) {
+    console.error(`Token refresh error: ${error.message}`);
+    return null;
+  }
+}
+
+function shouldRefreshToken(refreshOverride) {
+  if (!(REFRESH_CLIENT_ID && resolveRefreshToken(refreshOverride))) return false;
+  if (!refreshedToken) return true;
+  const now = Date.now();
+  if (now - lastRefreshAt >= REFRESH_INTERVAL_MS) return true;
+  if (refreshedToken.expires_at <= now + 5 * 60 * 1000) return true;
+  return false;
+}
+
+async function refreshIfNeeded(refreshOverride) {
+  if (!shouldRefreshToken(refreshOverride)) return null;
+  const refreshed = await refreshAccessToken(refreshOverride);
+  return refreshed?.access_token || null;
+}
+
+async function withAutoRefresh(fn, clientToken, clientRefreshToken) {
+  const refreshedTokenNow = await refreshIfNeeded(clientRefreshToken);
+  const effectiveToken = refreshedTokenNow || clientToken;
+  try {
+    return await fn(effectiveToken);
+  } catch (error) {
+    const isAuth = error.status === 401 || String(error.message || '').toLowerCase().includes('unauthorized');
+    if (!isAuth || !hasRefresh(clientRefreshToken)) throw error;
+
+    const refreshed = await refreshAccessToken(clientRefreshToken);
+    if (!refreshed?.access_token) throw error;
+
+    return await fn(refreshed.access_token, true, refreshed);
+  }
+}
+
 async function serveStatic(pathname, res) {
   const safePath = pathname === '/' ? '/index.html' : pathname;
   const filePath = resolve(join(PUBLIC_DIR, `.${safePath}`));
@@ -389,15 +486,21 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
+    const clientToken = String(req.headers['x-access-token'] || '').trim();
+    const clientRefreshToken = String(req.headers['x-refresh-token'] || '').trim();
+
     if (url.pathname === '/api/health') {
       json(res, 200, {
         ok: true,
-        ready: Boolean(ACCESS_TOKEN),
+        ready: Boolean(clientToken || DEFAULT_ACCESS_TOKEN),
         has_user_id: Boolean(USER_ID),
         has_username: Boolean(USERNAME),
         api_base: API_BASES[0],
         default_limit: DEFAULT_LIMIT,
         cache_ttl_ms: CACHE_TTL_MS,
+        has_refresh: hasRefresh(clientRefreshToken),
+        token_source: clientToken ? 'client' : refreshedToken ? 'refresh' : 'env',
+        refresh_source: clientRefreshToken ? 'client' : refreshedRefreshToken ? 'memory' : REFRESH_TOKEN_ENV ? 'env' : 'none',
       });
       return;
     }
@@ -405,12 +508,20 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/bookmarks') {
       const limit = clampNumber(url.searchParams.get('limit'), DEFAULT_LIMIT, 1, 100);
       try {
-        const data = await getBookmarks(limit);
+        const data = await withAutoRefresh(async (tk, refreshed, refreshPayload) => {
+          const payload = await getBookmarks(limit, tk || '');
+          if (refreshed && refreshPayload) {
+            if (refreshPayload.access_token) payload.refreshed_token = refreshPayload.access_token;
+            if (refreshPayload.refresh_token) payload.refreshed_refresh_token = refreshPayload.refresh_token;
+            payload.refreshed_expires_in = refreshPayload.expires_in || 7200;
+          }
+          return payload;
+        }, clientToken, clientRefreshToken);
         json(res, 200, data);
       } catch (error) {
         sendError(res, error.status || 500, error.message || 'Failed to fetch bookmarks', {
           detail: error.body || null,
-          hint: ACCESS_TOKEN
+          hint: clientToken || DEFAULT_ACCESS_TOKEN
             ? 'Set X_USER_ID if /2/users/me is not available for your token.'
             : 'Set X_ACCESS_TOKEN to your OAuth 2.0 user access token.',
         });
@@ -433,3 +544,10 @@ server.listen(PORT, () => {
   console.log(`X Bookmarks Dashboard listening on http://localhost:${PORT}`);
   console.log(`API base: ${API_BASES[0]}`);
 });
+
+if (REFRESH_CLIENT_ID && REFRESH_TOKEN_ENV) {
+  const refreshTimer = setInterval(() => {
+    refreshAccessToken().catch(() => {});
+  }, REFRESH_INTERVAL_MS);
+  refreshTimer.unref?.();
+}
